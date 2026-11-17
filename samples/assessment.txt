@@ -1,0 +1,5 @@
+SYNTHETIC EXAMPLE — NOT A CLIENT DOCUMENT
+risk_id | requirement_id | failure_mode | impact | severity | probability | detectability | risk_score | risk_class | mitigation
+RA-001 | URS-001 | Batch genealogy links may be lost during import | Incorrect recall scope and product quality impact | 5 | 3 | 4 | 20 | Low | Validate imported batch links against the source and execute negative tests
+RA-002 | URS-002 | An unauthorized user modifies a released record | Data integrity loss | 4 | 2 | 3 | 24 | Medium | Test role permissions with authorized and unauthorized accounts; retain test evidence
+RA-003 | URS-999 | Audit event is not recorded | Undetected record changes | 5 | 2 | 5 | 50 | High | Improve logging

@@ -1,0 +1,7 @@
+ILLUSTRATIVE FMEA V1 — TESTING ONLY; NOT AN APPROVED CLIENT SOP
+Score = severity * probability * detectability.
+Each rating is an integer from 1 through 5. Higher detectability means harder to detect a failure.
+Low = 1–19; Medium = 20–49; High = 50–125.
+This example establishes calculation rules only. It does not establish clinical or regulatory acceptance criteria.
+Severity, probability, and detectability ratings require documented justification and expert review.
+Each risk must map to a requirement, identify a failure mode and impact, and identify a concrete mitigation.

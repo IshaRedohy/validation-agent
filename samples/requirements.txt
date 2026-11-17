@@ -1,0 +1,4 @@
+SYNTHETIC EXAMPLE — NOT A CLIENT DOCUMENT
+URS-001: The system shall preserve batch genealogy during imports and identify invalid parent-child links.
+URS-002: Only authorized quality roles shall modify released records; unauthorized attempts shall be rejected.
+URS-003: The system shall record user, timestamp, original value, new value, and change reason for record modifications.
