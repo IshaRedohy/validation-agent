@@ -5,7 +5,7 @@ services:
       POSTGRES_DB: validation
       POSTGRES_USER: validation
       POSTGRES_PASSWORD: validation
-    ports: ["127.0.0.1:5432:5432"]
+    ports: ["127.0.0.1:5433:5432"]
     volumes: ["postgres:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U validation"]
@@ -19,6 +19,7 @@ services:
       DATABASE_URL: postgresql://validation:validation@db:5432/validation
       STORAGE_PATH: /data/documents
       OLLAMA_URL: http://host.docker.internal:11434
+      OLLAMA_GENERATION_TIMEOUT: ${OLLAMA_GENERATION_TIMEOUT:-900}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b-instruct-q4_K_M}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text:v1.5}
     ports: ["127.0.0.1:8000:8000"]

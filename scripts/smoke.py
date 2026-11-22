@@ -10,6 +10,5 @@ with httpx.Client(base_url=base, timeout=30) as client:
     for role in ['assessment','requirements','methodology']:
         path=Path('samples')/(role+'.txt')
         doc=checked(client.post(f'/projects/{project["id"]}/documents',data={'role':role},files={'file':(path.name,path.read_bytes(),'text/plain')}))
-        checked(client.put(f'/documents/{doc["id"]}/confirmation',json={k:doc['extraction'][k] for k in ['rows','requirements']}))
     job=checked(client.post(f'/projects/{project["id"]}/reviews'))
     print(f'Created review {job["id"]}. Inspect it in the UI; the worker runs semantic review asynchronously.')

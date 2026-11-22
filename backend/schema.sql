@@ -28,3 +28,6 @@ CREATE TABLE IF NOT EXISTS relationships (
  job_id uuid REFERENCES jobs(id), source text NOT NULL, relation text NOT NULL, target text NOT NULL,
  evidence_ids jsonb NOT NULL, PRIMARY KEY(job_id, source, relation, target)
 );
+
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS context jsonb NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS example_metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
