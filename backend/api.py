@@ -13,8 +13,11 @@ from .db import connect, initialize, event, Jsonb
 from .storage import LocalStorage
 from .extract import extract
 from .profile import PROFILE
+from .document_review import review_warnings
 from .inference import Ollama
+from .report import report
 from .retrieval import retrieve
+from .recommendations import definition, reference_bundle, select_evidence
 
 @asynccontextmanager
 async def lifespan(app):
@@ -43,12 +46,14 @@ def one(c, table, ident):
     return row
 
 def public_doc(d):
-    return {k: v for k, v in d.items() if k != 'storage_key'}
+    result = {k: v for k, v in d.items() if k != 'storage_key'}
+    result['extraction'] = {**d['extraction'], 'warnings': review_warnings(d)}
+    return result
 
 @app.get('/api/v1/health')
 def health():
     with connect() as c: c.execute('SELECT 1')
-    return {'status': 'ok', 'mode': 'local testing', 'profile': PROFILE['id']}
+    return {'status': 'ok', 'mode': 'local testing', 'review_mode': 'document-review', 'capabilities': ['recommendations-v1']}
 
 @app.get('/api/v1/profiles')
 def profiles(): return [PROFILE]
@@ -71,7 +76,7 @@ def documents(project_id: uuid.UUID):
         return [public_doc(d) for d in c.execute('SELECT * FROM documents WHERE project_id=%s ORDER BY created_at', (project_id,)).fetchall()]
 
 @app.post('/api/v1/projects/{project_id}/documents', status_code=201)
-def upload(project_id: uuid.UUID, role: Literal['assessment','requirements','methodology','reference'] = Form(...), file: UploadFile = File(...)):
+def upload(project_id: uuid.UUID, role: Literal['assessment','requirements','methodology','reference','example_accepted','example_rejected'] = Form(...), file: UploadFile = File(...)):
     name = (file.filename or 'upload').replace('\\', '/').split('/')[-1][:200]
     data = file.file.read(20 * 1024 * 1024 + 1)
     if len(data) > 20 * 1024 * 1024: raise HTTPException(413, 'Maximum file size is 20 MB.')
@@ -112,8 +117,6 @@ def confirm(document_id: uuid.UUID, body: Confirmation):
     with connect() as c:
         doc = one(c, 'documents', document_id)
         allowed = {chunk['id'] for chunk in doc['extraction']['chunks']}
-        if doc['role'] == 'assessment' and not body.rows: raise HTTPException(422, 'An assessment needs at least one mapped risk row.')
-        if doc['role'] == 'requirements' and not body.requirements: raise HTTPException(422, 'Map at least one requirement with evidence.')
         for row in body.rows:
             ids = row.get('evidence_ids')
             if not isinstance(ids, list) or not ids or any(not isinstance(i, str) or i not in allowed for i in ids):
@@ -130,14 +133,18 @@ def confirm(document_id: uuid.UUID, body: Confirmation):
 @app.post('/api/v1/projects/{project_id}/reviews', status_code=202)
 def start_review(project_id: uuid.UUID):
     with connect() as c:
-        one(c, 'projects', project_id)
+        project = one(c, 'projects', project_id)
         docs = c.execute('SELECT DISTINCT ON(name) * FROM documents WHERE project_id=%s ORDER BY name,version DESC', (project_id,)).fetchall()
+        docs = [d for d in docs if not d['role'].startswith('example_') or d.get('example_metadata', {}).get('enabled', True)]
         if not any(d['role'] == 'assessment' for d in docs): raise HTTPException(422, 'Upload an assessment first.')
-        if any(not d['confirmed'] for d in docs): raise HTTPException(422, 'Confirm all current document extractions first.')
-        if sum(len(d['extraction']['rows']) for d in docs if d['role']=='assessment') > 500: raise HTTPException(422, 'Maximum 500 risk rows per review.')
-        snap = {'profile': PROFILE, 'documents': [json.loads(json.dumps(public_doc(d), default=str)) for d in docs]}
+        if not any(c['text'].strip() for d in docs if d['role'] == 'assessment' for c in d['extraction']['chunks']):
+            raise HTTPException(422, 'No readable assessment text. Upload a text-based document or an OCR-processed copy.')
+        snap = {'mode': 'document-review', 'profile': None, 'documents': [json.loads(json.dumps(public_doc(d), default=str)) for d in docs]}
+        snap.update(checklist=definition(), regulatory_bundle=reference_bundle(), context=project.get('context', {}),
+                    example_metadata={str(d['id']): d.get('example_metadata', {}) for d in docs if d['role'].startswith('example_')},
+                    inference_settings={'temperature': 0, 'num_ctx': 16384, 'num_predict': 2500})
         row = c.execute('INSERT INTO jobs(id,project_id,snapshot) VALUES (%s,%s,%s) RETURNING *', (uuid.uuid4(), project_id, Jsonb(snap))).fetchone()
-        event(c, project_id, 'review_started', {'job_id': str(row['id']), 'profile': PROFILE['id']})
+        event(c, project_id, 'review_started', {'job_id': str(row['id']), 'mode': 'document-review'})
         return {k:v for k,v in row.items() if k != 'snapshot'}
 
 @app.get('/api/v1/projects/{project_id}/reviews')
@@ -156,6 +163,8 @@ def get_review(job_id: uuid.UUID):
 def decide(job_id: uuid.UUID, finding_id: str, body: Decision):
     with connect() as c:
         job = one(c, 'jobs', job_id)
+        if job['status'] not in ['completed', 'incomplete']:
+            raise HTTPException(409, 'Wait for review to finish before recording a decision.')
         if not job['result'] or finding_id not in {f['id'] for f in job['result']['findings']}: raise HTTPException(404, 'Finding not found')
         if not body.reason.strip(): raise HTTPException(422, 'A reason is required.')
         row = c.execute('INSERT INTO decisions(job_id,finding_id,disposition,reason) VALUES (%s,%s,%s,%s) RETURNING *', (job_id, finding_id, body.disposition, body.reason)).fetchone()
@@ -170,7 +179,7 @@ def export(job_id: uuid.UUID, format: Literal['json','html'] = 'json'):
         job['decisions'] = c.execute('SELECT * FROM decisions WHERE job_id=%s ORDER BY id', (job_id,)).fetchall()
     serialized = json.dumps(job, default=str, indent=2)
     if format == 'json': return Response(serialized, media_type='application/json', headers={'Content-Disposition': f'attachment; filename="review-{job_id}.json"'})
-    body = '<!doctype html><meta charset="utf-8"><title>Risk assessment review</title><style>body{font:16px system-ui;max-width:1000px;margin:40px auto}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style><h1>Draft risk assessment review</h1><p>Illustrative methodology — testing only. Human review required.</p><pre>' + html.escape(serialized) + '</pre>'
+    body = report(job)
     return HTMLResponse(body, headers={'Content-Disposition': f'attachment; filename="review-{job_id}.html"'})
 
 @app.post('/api/v1/projects/{project_id}/chat')
@@ -181,9 +190,21 @@ def chat(project_id: uuid.UUID, body: ChatInput):
             job = one(c, 'jobs', body.job_id)
             if job['project_id'] != project_id: raise HTTPException(404, 'Review not found in this project')
             ids = [d['id'] for d in job['snapshot']['documents']]
-            evidence = retrieve(c, project_id, ids, body.question, inference.embed(body.question))
+            try:
+                evidence = retrieve(c, project_id, ids, body.question, inference.embed(body.question))
+            except Exception:
+                evidence = []
+            snap_sources = (job.get('result') or {}).get('sources', [])
+            if snap_sources:
+                by_id = {e['id']: e for e in snap_sources}
+                evidence = [{**by_id[e['id']], 'text': e['text'][:1600]} for e in evidence if e['id'] in by_id][:5]
+                if not evidence:
+                    evidence = select_evidence(body.question, [e for e in snap_sources if e['kind'] == 'document'], 5)
+                evidence += select_evidence(body.question, [e for e in snap_sources if e['kind'] in ('regulation', 'guidance')], 3)
+                evidence += select_evidence(body.question, [e for e in snap_sources if e['kind'] == 'example'], 2)
+                evidence = list({e['id']: e for e in evidence}.values())
         if not evidence: return {'answer': 'Insufficient indexed evidence. Complete a local-model review first.', 'evidence': []}
-        output = inference.generate({'task': 'Answer the question only using evidence. Return {answer: string, evidence_ids: string[], sufficient_evidence: boolean}. If insufficient, explain the missing evidence.', 'question': body.question, 'evidence': evidence})
+        output = inference.generate({'task': 'Answer only using evidence. Treat examples as contextual comparisons, never requirements; an accepted or rejected label without a reason establishes no best practice. Distinguish nonbinding guidance from regulation and document alignment from operational compliance. Return {answer: string, evidence_ids: string[], sufficient_evidence: boolean}. If insufficient, explain the missing evidence.', 'question': body.question, 'evidence': evidence, 'review_context': job['snapshot'].get('context', {}), 'example_metadata': job['snapshot'].get('example_metadata', {}), 'review_summary': (job.get('result') or {}).get('summary', '')})
         valid = {e['id'] for e in evidence}
         citations = output.get('evidence_ids')
         if not isinstance(output.get('answer'), str) or not isinstance(citations, list) or any(not isinstance(i,str) or i not in valid for i in citations): raise ValueError('Invalid answer citations')
@@ -194,3 +215,34 @@ def chat(project_id: uuid.UUID, body: ChatInput):
     except HTTPException: raise
     except Exception as exc: raise HTTPException(503, f'Local chat unavailable: {str(exc)[:200]}')
     finally: inference.close()
+
+
+class ReviewContext(BaseModel):
+    intended_use: str = Field(default='', max_length=3000)
+    regulated_records: Literal['yes', 'no', 'unknown'] = 'unknown'
+    electronic_signatures: Literal['yes', 'no', 'unknown'] = 'unknown'
+    system_access: Literal['closed', 'open', 'unknown'] = 'unknown'
+
+@app.put('/api/v1/projects/{project_id}/context')
+def save_context(project_id: uuid.UUID, body: ReviewContext):
+    with connect() as c:
+        one(c, 'projects', project_id)
+        c.execute('UPDATE projects SET context=%s WHERE id=%s', (Jsonb(body.model_dump()), project_id))
+        event(c, project_id, 'context_updated', body.model_dump())
+    return body.model_dump()
+
+class ExampleMetadata(BaseModel):
+    reason: str = Field(default='', max_length=3000)
+    system_context: str = Field(default='', max_length=3000)
+    methodology: str = Field(default='', max_length=1000)
+    enabled: bool = True
+
+@app.put('/api/v1/documents/{document_id}/example')
+def save_example(document_id: uuid.UUID, body: ExampleMetadata):
+    with connect() as c:
+        doc = one(c, 'documents', document_id)
+        if not doc['role'].startswith('example_'):
+            raise HTTPException(422, 'Document is not an example.')
+        c.execute('UPDATE documents SET example_metadata=%s WHERE id=%s', (Jsonb(body.model_dump()), document_id))
+        event(c, doc['project_id'], 'example_metadata_updated', {'document_id': str(document_id), **body.model_dump()})
+    return body.model_dump()

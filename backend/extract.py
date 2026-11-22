@@ -1,4 +1,4 @@
-"""Location-preserving extraction; table interpretation is confirmed by the reviewer."""
+"""Location-preserving extraction for automatic document review."""
 import io
 import re
 import uuid
@@ -31,7 +31,6 @@ def extract(name, data):
             text = page.extract_text() or ''
             add(text, f'Page {n}')
             if len(text.strip()) < 20: warnings.append(f'Page {n}: insufficient text; OCR or manual transcription required.')
-        warnings.append('PDF risk rows require manual mapping and confirmation; page text is preserved.')
     elif suffix == 'docx':
         from docx import Document
         doc = Document(io.BytesIO(data))
@@ -54,7 +53,7 @@ def extract(name, data):
                 ident = add(' | '.join(values), f'{sheet.title}!A{row[0].row}:{get_column_letter(len(row))}{row[0].row}')
                 tables.append((values, ident))
                 if any(v.startswith('=') for v in values):
-                    warnings.append(f'{sheet.title} row {row[0].row}: formula preserved; confirm the displayed numeric value manually.')
+                    warnings.append(f'{sheet.title} row {row[0].row}: formula preserved; cached calculated values are unavailable for verification.')
         book.close()
     else:
         raise ValueError('Supported formats: PDF, DOCX, XLSX, TXT. Convert legacy DOC before upload.')
@@ -71,7 +70,5 @@ def extract(name, data):
     for chunk in chunks:
         for req in re.findall(r'\b(?:URS|FR|REQ)-[A-Za-z0-9]+\b', chunk['text']):
             requirements.setdefault(req, []).append(chunk['id'])
-    if any(len(c['text']) > 6000 for c in chunks):
-        warnings.append('Some source locations exceed the model context allowance; semantic review uses excerpts. Split the document into smaller sections for full coverage.')
     if not chunks: warnings.append('No readable content was extracted.')
     return {'chunks': chunks, 'rows': rows, 'requirements': requirements, 'warnings': list(dict.fromkeys(warnings))}

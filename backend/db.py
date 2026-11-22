@@ -4,7 +4,7 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-URL = os.getenv('DATABASE_URL', 'postgresql://validation:validation@localhost:5432/validation')
+URL = os.getenv('DATABASE_URL', 'postgresql://validation:validation@localhost:5433/validation')
 
 def connect():
     return psycopg.connect(URL, row_factory=dict_row)
